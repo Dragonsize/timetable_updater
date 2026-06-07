@@ -1,8 +1,8 @@
-name: Update Timetable to Google Calendar
+#name: Update Timetable to Google Calendar
 
 on:
-  schedule:
-    - cron: '0 2 * * *'  # Runs daily at 2:00 AM UTC
+  #schedule:
+  #  - cron: '0 2 * * *'  # Runs daily at 2:00 AM UTC
   workflow_dispatch:
 
 jobs:
