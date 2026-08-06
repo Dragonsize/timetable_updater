@@ -57,6 +57,12 @@ coverage.xml
 # Google credentials
 credentials.json
 timetable.json
+service_account.json
+service-account.json
+*.json
+
+# OAuth client secrets
+client_secret_*.json
 
 # Playwright
 playwright-report/
@@ -66,3 +72,19 @@ playwright-report/
 
 # GitHub Actions
 .github/workflows/*.secrets
+
+# Output files
+timetable.csv
+*.csv
+
+# Artifacts (no extension)
+timetable
+login
+flow/
+
+# Backup files
+*.bak
+*.old
+
+# Debug files
+debug_*.py
