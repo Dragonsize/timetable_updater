@@ -24,5 +24,10 @@ jobs:
           TIMETABLE_SEMESTER: ${{ secrets.TIMETABLE_SEMESTER }}
           GOOGLE_CALENDAR_ID: ${{ secrets.GOOGLE_CALENDAR_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          CRAWLER_WEEKS_AHEAD: 2
+          CALENDAR_COLOR_CLASS: 2
+          CALENDAR_COLOR_EXAM: 11
+          CALENDAR_COLOR_GRAPHITE: 8
+          CALENDAR_COLOR_BASIL: 10
         run: |
           python main.py --sync

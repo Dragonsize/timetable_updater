@@ -35,8 +35,11 @@ TIMEZONE = os.getenv("APP_TIMEZONE", "Asia/Ho_Chi_Minh")
 MAX_ATTEMPTS = 4
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 
-# Color IDs (https://developers.google.com/calendar/api/v3/reference/colors/get)
-COLOR_EXAM = "11"  # Tomato red
+# Configurable colors (Google Calendar color IDs: 1-11)
+COLOR_EXAM = os.getenv("CALENDAR_COLOR_EXAM", "11")   # Tomato red
+COLOR_CLASS = os.getenv("CALENDAR_COLOR_CLASS", "2")  # Light blue
+COLOR_GRAPHITE = os.getenv("CALENDAR_COLOR_GRAPHITE", "8")  # Gray - teacher absent
+COLOR_BASIL = os.getenv("CALENDAR_COLOR_BASIL", "10")  # Light green - makeup class
 
 # TDTU official period → time mapping (must match main.py TIME_SLOTS)
 TIME_SLOTS = {
@@ -76,6 +79,7 @@ def _class_payload(ev: dict) -> dict:
         "location": ev.get("room", ""),
         "start": {"dateTime": start_dt.isoformat(), "timeZone": TIMEZONE},
         "end": {"dateTime": end_dt.isoformat(), "timeZone": TIMEZONE},
+        "colorId": COLOR_GRAPHITE if ev.get("status") == "absent" else COLOR_BASIL if ev.get("status") == "makeup" else COLOR_CLASS,
         "reminders": {"useDefault": True},
     }
 
@@ -127,7 +131,7 @@ def _source_key(ev: dict) -> str:
         return (f"exam:{ev.get('session_date')}:{ev.get('start_time')}:"
                 f"{ev.get('code')}:{ev.get('group')}")
     return (f"class:{ev.get('session_date')}:{ev.get('start_period')}-{ev.get('end_period')}:"
-            f"{ev.get('code')}:{ev.get('group')}")
+            f"{ev.get('code')}:{ev.get('group')}:{ev.get('status','normal')}")
 
 
 def _source_hash(payload: dict) -> str:

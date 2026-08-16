@@ -22,6 +22,8 @@ load_dotenv()
 STUDENT_ID = os.getenv("SCHOOL_USERNAME") or os.getenv("STUDENT_ID")
 PASSWORD = os.getenv("SCHOOL_PASSWORD") or os.getenv("PASSWORD")
 TARGET_SEMESTER = os.getenv("TIMETABLE_SEMESTER")
+_raw_weeks = os.getenv("CRAWLER_WEEKS_AHEAD", "").strip()
+CRAWLER_WEEKS_AHEAD = int(_raw_weeks) if _raw_weeks.isdigit() else 2
 
 PORTAL_URL = "https://old-stdportal.tdtu.edu.vn/Login/"
 SCHEDULE_URL = "https://lichhoc-lichthi.tdtu.edu.vn/tkb2.aspx"
@@ -120,6 +122,13 @@ PARSE_WEEKLY_GRID_JS = r"""
         return null;
     };
 
+    const detectStatus = (t) => {
+        const l = (t||"").toLowerCase();
+        if (l.includes("báo vắng") || l.includes("bao vang")) return "absent";
+        if (l.includes("dạy bù") || l.includes("day bu")) return "makeup";
+        return "normal";
+    };
+
     let target=null, targetRows=[];
     for (const tbl of Array.from(document.querySelectorAll("table"))) {
         const rows=Array.from(tbl.querySelectorAll(":scope > tbody > tr, :scope > tr"));
@@ -160,7 +169,7 @@ PARSE_WEEKLY_GRID_JS = r"""
                         const subject=cleanSubject(et); if (!subject) continue;
                         const pp=extractPeriodRange(et, rp, rp>0?rp+rs-1:0);
                         if (!(pp.start>0&&pp.end>=pp.start)) continue;
-                        entries.push({subject_name:subject,english_name:extractEnglishName(et),code:extractCode(et),group:extractGroup(et),room:extractRoom(et),day_of_week:dow,session_date:sd,start_period:pp.start,end_period:pp.end});
+                        entries.push({subject_name:subject,english_name:extractEnglishName(et),code:extractCode(et),group:extractGroup(et),room:extractRoom(et),day_of_week:dow,session_date:sd,start_period:pp.start,end_period:pp.end,status: detectStatus(et)});
                     }
                 }
             }
@@ -463,10 +472,10 @@ def main():
     parser = argparse.ArgumentParser(description="TDTU Timetable & Exam Scraper")
     parser.add_argument("--semester", "-s", help="Semester value (e.g. 136)")
     parser.add_argument("--output", "-o", default="timetable.csv")
-    parser.add_argument("--weeks", "-w", type=int, default=2,
+    parser.add_argument("--weeks", "-w", type=int, default=CRAWLER_WEEKS_AHEAD,
                         help="Weeks to scrape (default: 2 = current + next)")
     parser.add_argument("--full", action="store_true",
-                        help="Scan full semester (16 weeks, slow)")
+                        help="Scan full semester (20 weeks, slow)")
     parser.add_argument("--no-exams", action="store_true",
                         help="Skip exam scraping")
     parser.add_argument("--sync", action="store_true",
