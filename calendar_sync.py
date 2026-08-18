@@ -89,12 +89,11 @@ def _exam_payload(ev: dict) -> dict:
     tz = ZoneInfo(TIMEZONE)
     start_dt = _as_datetime(date_str, ev.get("start_time", "07:00"), tz)
     # exams have start time only; default 1h duration unless known
-    end_dt = start_dt
     dur = ev.get("duration_min") or 0
     if dur > 0:
-        end_dt = end_dt.add(minutes=dur)
+        end_dt = start_dt + timedelta(minutes=dur)
     else:
-        end_dt = end_dt.add(hours=1)
+        end_dt = start_dt + timedelta(hours=1)
 
     desc_parts = [f"Type: {ev.get('exam_type', 'exam')}"]
     if ev.get("code"):
@@ -117,7 +116,7 @@ def _exam_payload(ev: dict) -> dict:
 
 def _as_datetime(date_iso: str, time_hm: str, tz: ZoneInfo):
     """Build tz-aware datetime from YYYY-MM-DD + HH:MM."""
-    from datetime import datetime as dt, time as dtime
+    from datetime import datetime as dt, time as dtime, timedelta
     d = dt.fromisoformat(date_iso).date()
     h, m = (int(x) for x in time_hm.split(":"))
     return dt.combine(d, dtime(h, m), tzinfo=tz)
@@ -152,6 +151,17 @@ def _event_source_hash(event: dict) -> str:
 def _event_source_type(event: dict) -> str:
     props = ((event.get("extendedProperties") or {}).get("private") or {})
     return str(props.get("source_type") or "").strip()
+
+
+def _date_of(event: dict) -> str | None:
+    """Return YYYY-MM-DD of an event's start (timed or all-day), else None.
+
+    `_list_bot_events` requests singleEvents=True, so recurring events are
+    expanded and carry `start.dateTime`.
+    """
+    start = event.get("start") or {}
+    sd = start.get("dateTime") or start.get("date") or ""
+    return sd[:10] if sd else None
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +263,17 @@ def sync_to_google_calendar(events: list[dict]) -> tuple[int, int]:
     existing = _list_bot_events(service, calendar_id)
     desired_keys = {item["key"] for item in desired}
 
+    # Determine the scraped class date window. _class_payload maps periods→times
+    # so we read the ISO start date from each desired payload. Exams always cover
+    # their full range already (all tabs are always scraped), so only bound classes.
+    class_dates = [
+        item["payload"]["start"]["dateTime"][:10]
+        for item in desired
+        if item["source_type"] == TYPE_CLASS
+    ]
+    window_lo = min(class_dates) if class_dates else None
+    window_hi = max(class_dates) if class_dates else None
+
     upserted = 0
     for item in desired:
         cur = existing.get(item["key"])
@@ -283,8 +304,17 @@ def sync_to_google_calendar(events: list[dict]) -> tuple[int, int]:
     for key, ev in existing.items():
         if key in desired_keys:
             continue
-        if _event_source_type(ev) not in (TYPE_CLASS, TYPE_EXAM):
+        stype = _event_source_type(ev)
+        if stype not in (TYPE_CLASS, TYPE_EXAM):
             continue  # never touch other source types
+        if stype == TYPE_CLASS:
+            # Only prune stale classes inside the scraped date window, so a
+            # short (e.g. 2-week) sync never deletes far-future weeks.
+            if window_lo is None:
+                continue  # no classes scraped -> preserve all
+            ev_date = _date_of(ev)
+            if ev_date is None or not (window_lo <= ev_date <= window_hi):
+                continue
         eid = str(ev.get("id") or "").strip()
         if eid:
             _execute("calendar delete",
