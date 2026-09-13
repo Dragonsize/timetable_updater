@@ -1,146 +1,91 @@
-# Timetable Updater with requests and Google Calendar
+# Timetable & Exam Updater (TDTU)
 
-## Overview
-Automates login to your university timetable, scrapes weekly schedule, and outputs CSV for Google Calendar import. Uses direct HTTP requests instead of browser automation.
+Automates student login to Ton Duc Thang University (TDTU) portal, scrapes weekly class timetable and exam schedule via fast direct HTTP requests, and exports to CSV or syncs directly to Google Calendar.
+
+## Features
+- **Fast HTTP Crawler**: Uses direct authenticated HTTP requests and WebForms state management (`requests` + `BeautifulSoup4`). Crawls schedules in seconds without browser overhead.
+- **Playwright Fallback**: Optional Chromium browser scraper fallback (`--playwright`) if needed.
+- **Accurate Timetable Extraction**: Supports multi-week crawling, teacher absence ("GV báo vắng"), and make-up classes ("GV dạy bù").
+- **Exam Schedule**: Scrapes midterm, final, and second-chance final exams across all tabs.
+- **Google Calendar Sync & SQLite Audit Log**: Reconciles bot-owned events (`extendedProperties.private`) without overwriting manual events. Automatically records all inserted, updated, and deleted events in a local SQLite database (`sync_history.db`) so you always know what changed.
+- **Custom Event Colors**: Tomato red for exams, graphite gray for teacher absences, light green for makeup classes, light blue for regular classes.
+- **Flexible Export**: CSV ready for Google Calendar import, or JSON for debugging.
 
 ## Tech Stack
-- Python 3
-- requests (HTTP client)
-- lxml (HTML parsing)
-- Google Calendar API (optional sync)
-- python-dotenv (environment variables)
+- Python 3.10+
+- `requests` & `beautifulsoup4` (Fast HTTP crawling & HTML parsing)
+- `playwright` (Optional browser fallback)
+- `google-api-python-client` (Google Calendar API v3)
+- `python-dotenv` (Environment variables)
 
 ## Setup
-1. **Install dependencies:**
+
+1. **Clone repository and install dependencies:**
    ```sh
    pip install -r requirements.txt
    ```
-
-2. **Google API Credentials (optional):**
-   - Create a Google Cloud project and enable Calendar API.
-   - Download `credentials.json` and add to repo (or use GitHub Secrets).
-
-3. **Environment Variables:**
-   Create `.env` file with:
+   *(Optional for Playwright fallback)*:
+   ```sh
+   python -m playwright install --with-deps chromium
    ```
+
+2. **Configure environment:**
+   Copy `.env.sample` to `.env` and configure credentials:
+   ```sh
+   cp .env.sample .env
+   ```
+   Edit `.env`:
+   ```dotenv
    SCHOOL_USERNAME=your_student_id
-   SCHOOL_PASSWORD=your_password
-   TIMETABLE_SEMESTER=136  # Optional: e.g., 136=HK1/2026-2027
-   GOOGLE_CALENDAR_ID=primary  # Optional: your calendar ID
+   SCHOOL_PASSWORD=your_portal_password
+   GOOGLE_CALENDAR_ID=primary
+   GOOGLE_SERVICE_ACCOUNT_FILE=credentials.json
    ```
 
 ## Usage
 
-### Basic Usage (CSV output)
+### Basic Usage (Scrape 2 weeks + exams to CSV)
 ```sh
 python main.py
 ```
 
-### With Specific Semester
+### Direct Google Calendar Sync
+```sh
+python main.py --sync
+```
+
+### Full Semester Scrape
+```sh
+python main.py --full --sync
+```
+
+### Specify Number of Weeks
+```sh
+python main.py --weeks 4
+```
+
+### Specific Semester
 ```sh
 python main.py --semester 136
 ```
 
-### With JSON Output (for debugging)
+### JSON Export
 ```sh
 python main.py --json
 ```
 
-### Disable CSV Output
+### Force Playwright Browser Scraper
 ```sh
-python main.py --no-csv --json
+python main.py --playwright
 ```
 
-## Output Formats
+### View SQLite Sync History (Audit Log)
+Show recent inserted, updated, and deleted calendar events from SQLite:
+```sh
+# Show last 15 sync operations
+python main.py --history
 
-### CSV Format (for Google Calendar import)
-The CSV file is ready to import directly into Google Calendar:
-- Subject
-- Start Date (MM/DD/YYYY)
-- Start Time (HH:MM)
-- End Date (MM/DD/YYYY)
-- End Time (HH:MM)
-- All Day Event (False)
-- Description
-- Location
-- Private (False)
-
-### JSON Format (optional)
-Raw scraped data for debugging.
-
-## Files
-- `main.py` — Main script
-- `requirements.txt` — Dependencies
-- `.env` — Credentials (not committed)
-- `.env.sample` — Template for `.env`
-
-## How It Works
-
-1. **Login Flow:**
-   - GET login page at `stdportal.tdtu.edu.vn`
-   - POST credentials to `/Login/SignIn`
-   - Extract authentication token from response
-   - Follow redirects to establish session
-
-2. **Timetable Scraping:**
-   - GET timetable page with authentication token
-   - Extract ASP.NET ViewState from HTML
-   - POST to select semester (if specified)
-   - POST to select weekly view
-   - Parse HTML table with lxml
-
-3. **Data Processing:**
-   - Extract course names, periods, days
-   - Map periods to actual times
-   - Format dates for Google Calendar
-
-## Example Output
-```
-[1/4] Logging in to SSO...
-  ✓ Logged in successfully
-[2/4] Loading timetable...
-  → Selecting weekly view...
-[3/4] Parsing timetable...
-  ✓ Found 25 events
-[4/4] Exporting to CSV: timetable.csv
-  ✓ Exported 25 events to timetable.csv
-
-✓ Done!
-  CSV: timetable.csv
+# Show last 30 sync operations
+python main.py --history 30
 ```
 
-## Importing to Google Calendar
-
-1. Go to Google Calendar
-2. Click Settings ⚙️ → Import & Export
-3. Select the generated `timetable.csv` file
-4. Choose which calendar to add events to
-5. Click Import
-
-## Customization
-
-### Adjusting Time Slots
-Edit the `TIME_SLOTS` dictionary in `main.py` to match your university's schedule.
-
-### Different Semester
-Use `--semester` flag or set `TIMETABLE_SEMESTER` in `.env`.
-
-### Google Calendar API Sync
-For automatic sync, set up OAuth2 credentials and use `google-api-python-client`. This feature can be added later.
-
-## Error Handling
-- Invalid credentials → Check username/password
-- "Could not find timetable table" → Page structure may have changed
-- Network errors → Check internet connection
-- ViewState errors → Try clearing cookies or waiting
-
-## Security
-- Never commit `.env` file
-- Use GitHub Secrets for CI/CD
-- Rotate credentials periodically
-
-## Next Steps
-- [ ] Add Google Calendar API integration
-- [ ] Add support for multiple semesters
-- [ ] Add date range selection
-- [ ] Add notification settings

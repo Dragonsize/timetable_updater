@@ -183,82 +183,147 @@ PARSE_WEEKLY_GRID_JS = r"""
 """
 
 # ---------------------------------------------------------------------------
-# Exam parser (grid layout: day headers, cells with embedded details)
+# Exam parser (supports standard exam tables and cell-based cards)
 # ---------------------------------------------------------------------------
 EXAM_GRID_JS = r"""
 (tableId) => {
-    const englishDays = [
-        ["monday", "Monday"], ["tuesday", "Tuesday"], ["wednesday", "Wednesday"],
-        ["thursday", "Thursday"], ["friday", "Friday"], ["saturday", "Saturday"],
-        ["sunday", "Sunday"]
-    ];
-    const vnMap = [
-        ["thứ 2", "Monday"], ["thứ 3", "Tuesday"], ["thứ 4", "Wednesday"],
-        ["thứ 5", "Thursday"], ["thứ 6", "Friday"], ["thứ 7", "Saturday"],
-        ["chủ nhật", "Sunday"], ["cn", "Sunday"]
-    ];
-    const extractWeekday = (t) => {
-        const l = (t||"").replace(/\s+/g," ").toLowerCase();
-        for (const [n,d] of englishDays) { if (l.includes(n)) return d; }
-        for (const [v,e] of vnMap) { if (l.includes(v)) return e; }
-        return "";
+    const rows = [];
+    const parseDate = (text) => {
+        const m = (text || "").match(/(\d{1,2})[\/\.-](\d{1,2})(?:[\/\.-](\d{2,4}))?/);
+        if (!m) return "";
+        const d = parseInt(m[1], 10);
+        const mo = parseInt(m[2], 10);
+        let y = m[3] ? parseInt(m[3], 10) : (new Date()).getFullYear();
+        if (y < 100) y += 2000;
+        if (!d || !mo || !y) return "";
+        return `${String(y).padStart(4, "0")}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
     };
-    const toIsoDate = (d, mo, y) => {
-        if (!d||!mo||!y) return "";
-        const dt = new Date(Date.UTC(y, mo-1, d));
-        if (dt.getUTCFullYear()!==y||dt.getUTCMonth()!==mo-1||dt.getUTCDate()!==d) return "";
-        return `${y.toString().padStart(4,"0")}-${mo.toString().padStart(2,"0")}-${d.toString().padStart(2,"0")}`;
+    const parseTime = (text) => {
+        const m = (text || "").match(/(\d{1,2})[:h](\d{2})/i);
+        if (!m) return "";
+        return `${String(parseInt(m[1], 10)).padStart(2, "0")}:${m[2]}`;
     };
 
-    const table = document.getElementById(tableId);
-    if (!table) return [];
-    const rows = Array.from(table.querySelectorAll("tr"));
-    if (rows.length < 2) return [];
-    const headerCells = Array.from(rows[0].querySelectorAll("td, th"));
-    if (headerCells.length < 3) return [];
+    // 1. Table layout: search tableId or any table with exam headers
+    const targetTable = tableId ? document.getElementById(tableId) : null;
+    const tables = targetTable ? [targetTable] : Array.from(document.querySelectorAll("table"));
 
-    const dayByCol = {};
-    for (let c = 0; c < headerCells.length; c++)
-        dayByCol[c] = extractWeekday(headerCells[c]?.innerText || "");
+    for (const table of tables) {
+        const headCells = Array.from(table.querySelectorAll("tr:first-child th, tr:first-child td, tr.Headerrow th, tr.Headerrow td"));
+        const head = headCells.map((c) => (c.innerText || "").trim().toLowerCase());
+        const allHead = head.join(" ");
+        const hasSubject = /(môn|mon|subject|học phần|hoc phan)/i.test(allHead);
+        const hasDate = /(ngày|ngay|date)/i.test(allHead);
+        const hasTime = /(giờ|gio|time|ca\s*thi)/i.test(allHead);
+        if (!hasSubject || (!hasDate && !hasTime)) continue;
 
-    const entries = [];
-    for (let r = 1; r < rows.length; r++) {
-        const cells = Array.from(rows[r].querySelectorAll("td"));
-        for (let c = 0; c < cells.length; c++) {
-            const dow = dayByCol[c];
-            if (!dow) continue;
-            const text = (cells[c].innerText || "").replace(/\s+/g, " ").trim();
-            if (!text) continue;
-            const subject = (text.split("(")[0].split("|")[0].trim()) || "";
-            if (!subject) continue;
-            const codeMatch = text.match(/\((\d{5,6})\)/);
-            const dateMatch = text.match(/Date:\s*(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
-            const timeMatch = text.match(/Time:\s*(\d{1,2}):(\d{2})/);
-            const roomMatch = text.match(/Room:\s*(\S+)/);
-            const groupMatch = text.match(/Group:\s*(\d+)/);
-            const subgroupMatch = text.match(/Sub-group:\s*(\d+)/);
-            const durationMatch = text.match(/Duration:\s*(\d+)/);
-            let isoDate = "";
-            if (dateMatch) {
-                let y = parseInt(dateMatch[3], 10);
-                if (y < 100) y += 2000;
-                isoDate = toIsoDate(parseInt(dateMatch[1], 10), parseInt(dateMatch[2], 10), y);
+        const idxSubject = head.findIndex((h) => /(môn|mon|subject|học phần)/i.test(h));
+        const idxDate = head.findIndex((h) => /(ngày|ngay|date)/i.test(h));
+        const idxTime = head.findIndex((h) => /(giờ|gio|time|ca\s*thi)/i.test(h));
+        const idxRoom = head.findIndex((h) => /(phòng|phong|room)/i.test(h));
+        const idxType = head.findIndex((h) => /(hình thức|hinh thuc|type|loại|loai)/i.test(h));
+
+        const trs = Array.from(table.querySelectorAll("tr")).slice(1);
+        for (const tr of trs) {
+            if (tr.classList.contains("Headerrow")) continue;
+            const tds = Array.from(tr.querySelectorAll("td")).map((c) => (c.innerText || "").trim());
+            if (tds.length < 2) continue;
+            const rawSubject = idxSubject >= 0 ? (tds[idxSubject] || "") : "";
+            if (!rawSubject) continue;
+
+            const parts = rawSubject.split("|");
+            const subject = parts[0].split("(")[0].trim();
+            const englishName = parts.length > 1 ? parts[1].split("(")[0].trim() : subject;
+            const codeMatch = rawSubject.match(/\((\d{5,6})\)/);
+            const groupMatch = rawSubject.match(/(?:Groups?|Nhóm)\s*:?\s*(\d+)/i);
+            const subgroupMatch = rawSubject.match(/(?:Sub-group|Tổ)\s*:?\s*(\d+)/i);
+
+            const dateText = idxDate >= 0 ? (tds[idxDate] || "") : tds.join(" ");
+            const dateIso = parseDate(dateText);
+            if (!dateIso) continue;
+
+            const timeText = idxTime >= 0 ? (tds[idxTime] || "") : tds.join(" ");
+            const start = parseTime(timeText);
+            let end = "";
+            const range = (timeText || "").match(/(\d{1,2}[:h]\d{2})\s*(?:-|–|—|to|đến|den|->|~)\s*(\d{1,2}[:h]\d{2})/i);
+            if (range) end = parseTime(range[2]);
+
+            let dur = 0;
+            if (start && end) {
+                const [sh, sm] = start.split(":").map(Number);
+                const [eh, em] = end.split(":").map(Number);
+                dur = (eh * 60 + em) - (sh * 60 + sm);
+                if (dur < 0) dur += 1440;
+            } else {
+                const durMatch = (timeText || "").match(/(\d+)\s*(?:phút|min)/i);
+                if (durMatch) dur = parseInt(durMatch[1], 10);
             }
-            const startTime = timeMatch ? `${timeMatch[1].padStart(2,"0")}:${timeMatch[2]}` : "";
-            entries.push({
+
+            rows.push({
                 subject_name: subject,
+                english_name: englishName,
                 code: codeMatch ? codeMatch[1] : "",
-                day_of_week: dow,
-                session_date: isoDate,
-                start_time: startTime,
-                duration_min: durationMatch ? parseInt(durationMatch[1], 10) : 0,
-                exam_room: roomMatch ? roomMatch[1] : "",
                 group: groupMatch ? groupMatch[1] : "",
                 subgroup: subgroupMatch ? subgroupMatch[1] : "",
+                session_date: dateIso,
+                start_time: start,
+                end_time: end,
+                duration_min: dur,
+                exam_room: idxRoom >= 0 ? (tds[idxRoom] || "") : "",
+                notes: idxType >= 0 ? (tds[idxType] || "") : "",
             });
         }
     }
-    return entries;
+
+    // 2. Grid cell fallback
+    if (!rows.length) {
+        for (const cell of Array.from(document.querySelectorAll("td, div"))) {
+            const text = (cell.innerText || "").trim();
+            if (!text) continue;
+            const lowered = text.toLowerCase();
+            if (!/(ngày\s*thi|ngay\s*thi|date\s*:)/i.test(lowered)) continue;
+            if (!/(giờ\s*thi|gio\s*thi|time\s*:)/i.test(lowered)) continue;
+
+            const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 0);
+            if (!lines.length) continue;
+
+            const firstLine = lines[0];
+            const parts = firstLine.split("|");
+            const subject = parts[0].split("(")[0].trim();
+            const englishName = parts.length > 1 ? parts[1].split("(")[0].trim() : subject;
+            const codeMatch = text.match(/\((\d{5,6})\)/);
+            const groupMatch = text.match(/(?:Groups?|Nhóm)\s*:?\s*(\d+)/i);
+
+            const dateLine = lines.find(l => /(ngày|ngay|date)/i.test(l)) || text;
+            const timeLine = lines.find(l => /(giờ|gio|time)/i.test(l)) || text;
+            const roomLine = lines.find(l => /(phòng|phong|room)/i.test(l)) || "";
+
+            const dateIso = parseDate(dateLine);
+            if (!dateIso) continue;
+
+            const start = parseTime(timeLine);
+            let end = "";
+            const range = (timeLine || "").match(/(\d{1,2}[:h]\d{2})\s*(?:-|–|—|to|đến|den|->|~)\s*(\d{1,2}[:h]\d{2})/i);
+            if (range) end = parseTime(range[2]);
+
+            let room = "";
+            const roomMatch = roomLine.match(/(?:phòng|phong|room)\s*[:\-]?\s*(.+)$/i);
+            if (roomMatch) room = roomMatch[1].trim();
+
+            rows.push({
+                subject_name: subject,
+                english_name: englishName,
+                code: codeMatch ? codeMatch[1] : "",
+                group: groupMatch ? groupMatch[1] : "",
+                session_date: dateIso,
+                start_time: start,
+                end_time: end,
+                exam_room: room,
+                notes: "",
+            });
+        }
+    }
+    return rows;
 }
 """
 
@@ -338,12 +403,31 @@ def _scrape_exams(page, semester: str | None = None) -> list[dict]:
     page.wait_for_timeout(2000)
 
     # Exam page has its own semester dropdown
-    sem = semester or TARGET_SEMESTER
+    today = datetime.now()
+    default_sem = f"HK1/{today.year}-{today.year+1}" if today.month >= 8 else (f"HK2/{today.year-1}-{today.year}" if today.month <= 5 else f"Hè/{today.year-1}-{today.year}")
+    sem = semester or TARGET_SEMESTER or default_sem
+
     if sem:
-        cur = page.locator("[id='LichThi1_cboHocKy'] option[selected]").get_attribute("value") or ""
-        if cur != sem:
-            page.locator("[id='LichThi1_cboHocKy']").select_option(sem)
-            _wait_postback(page)
+        try:
+            select = page.locator("[id='LichThi1_cboHocKy']")
+            if select.count() > 0:
+                cur = page.locator("[id='LichThi1_cboHocKy'] option[selected]").get_attribute("value") or ""
+                # Find best matching option value
+                options = page.locator("[id='LichThi1_cboHocKy'] option").all()
+                target_val = None
+                sem_norm = sem.replace(" ", "").replace("/", "").replace("-", "").lower()
+                for opt in options:
+                    v = opt.get_attribute("value") or ""
+                    t = opt.inner_text() or ""
+                    t_norm = t.replace(" ", "").replace("/", "").replace("-", "").lower()
+                    if v == sem or sem_norm in t_norm or sem.lower() in t.lower():
+                        target_val = v
+                        break
+                if target_val and cur != target_val:
+                    select.select_option(target_val)
+                    _wait_postback(page)
+        except Exception as exc:
+            logger.debug("Exam semester select failed: %s", exc)
 
     tabs = [
         (0, "LichThi1_GiuaKyTable", "midterm"),
@@ -351,9 +435,22 @@ def _scrape_exams(page, semester: str | None = None) -> list[dict]:
         (2, "LichThi1_CuoiKy2Table", "final-2nd"),
     ]
     entries = []
+
+    # Check initial page before postback
+    init_raw = page.evaluate(EXAM_GRID_JS, "") or []
+    for e in init_raw:
+        e["student_id"] = STUDENT_ID
+        e["type"] = "exam"
+        e["exam_type"] = "midterm"
+    entries.extend(init_raw)
+
     for tab_idx, table_id, tab_name in tabs:
-        page.evaluate(f"__doPostBack('LichThi1$Menu1', '{tab_idx}')")
-        _wait_postback(page)
+        try:
+            page.evaluate(f"__doPostBack('LichThi1$Menu1', '{tab_idx}')")
+            _wait_postback(page)
+        except Exception as exc:
+            logger.debug("Postback for exam tab %s failed: %s", tab_name, exc)
+
         raw = page.evaluate(EXAM_GRID_JS, table_id) or []
         for e in raw:
             e["student_id"] = STUDENT_ID
@@ -369,9 +466,36 @@ def _scrape_exams(page, semester: str | None = None) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-def fetch_all(semester: str | None = None, weeks: int = 2,
-              exams: bool = True) -> list[dict]:
-    """Single-session scrape: classes for `weeks` weeks + exams."""
+def fetch_all_http(semester: str | None = None, weeks: int = 2,
+                   exams: bool = True) -> list[dict]:
+    """Fast single-session scrape via pure HTTP client: classes + exams."""
+    from tdtu import TDTUClient, fetch_schedule_http, fetch_exam_schedule_http
+
+    if not STUDENT_ID or not PASSWORD:
+        raise ValueError("Missing STUDENT_ID/SCHOOL_USERNAME or PASSWORD/SCHOOL_PASSWORD in .env")
+
+    with TDTUClient(STUDENT_ID, PASSWORD) as client:
+        events = fetch_schedule_http(client, selected_semester=semester, max_weeks=weeks)
+        if exams:
+            exam_events = fetch_exam_schedule_http(client, selected_semester=semester)
+            events.extend(exam_events)
+
+    seen: set[tuple] = set()
+    deduped = []
+    for e in events:
+        sig = (e.get("subject_name"), e.get("room") or e.get("exam_room", ""),
+               e.get("day_of_week"), e.get("session_date", ""),
+               e.get("start_period", 0), e.get("end_period", 0),
+               e.get("start_time", ""))
+        if sig not in seen:
+            seen.add(sig)
+            deduped.append(e)
+    return deduped
+
+
+def fetch_all_playwright(semester: str | None = None, weeks: int = 2,
+                         exams: bool = True) -> list[dict]:
+    """Single-session scrape via Playwright: classes for `weeks` weeks + exams."""
     if not STUDENT_ID or not PASSWORD:
         raise ValueError("Missing STUDENT_ID/SCHOOL_USERNAME or PASSWORD/SCHOOL_PASSWORD in .env")
 
@@ -393,7 +517,6 @@ def fetch_all(semester: str | None = None, weeks: int = 2,
             ctx.close()
             browser.close()
 
-    # Deduplicate
     seen: set[tuple] = set()
     deduped = []
     for e in all_entries:
@@ -407,6 +530,20 @@ def fetch_all(semester: str | None = None, weeks: int = 2,
     return deduped
 
 
+def fetch_all(semester: str | None = None, weeks: int = 2,
+              exams: bool = True, force_playwright: bool = False) -> list[dict]:
+    """Scrape classes and exams. Defaults to fast HTTP crawler with Playwright fallback."""
+    if not force_playwright:
+        try:
+            logger.info("Starting fast HTTP crawl...")
+            return fetch_all_http(semester=semester, weeks=weeks, exams=exams)
+        except Exception as exc:
+            logger.warning("HTTP crawl failed (%s). Falling back to Playwright...", exc)
+
+    logger.info("Running Playwright crawler...")
+    return fetch_all_playwright(semester=semester, weeks=weeks, exams=exams)
+
+
 def export_csv(events: list[dict], filename: str) -> str:
     """Export to Google Calendar CSV."""
     headers = ["Subject", "Start Date", "Start Time", "End Date", "End Time",
@@ -418,19 +555,33 @@ def export_csv(events: list[dict], filename: str) -> str:
             is_exam = ev.get("type") == "exam"
             date_str = ev.get("session_date", "")
             st = ev.get("start_time", "")
-            et = ""
+            et = ev.get("end_time", "")
             code = ev.get("code", "")
             group = ev.get("group", "")
             if is_exam:
-                subj = f"[EXAM] {ev.get('subject_name', '')}"
-                desc = f"Type: {ev.get('exam_type', 'exam')}"
-                room = ev.get("exam_room", "")
+                subj = f"[EXAM] {ev.get('english_name') or ev.get('subject_name', '')}"
+                desc_parts = [f"Type: {ev.get('exam_type', 'exam')}"]
                 if ev.get("duration_min"):
-                    desc += f", Duration: {ev['duration_min']}min"
+                    desc_parts.append(f"Duration: {ev['duration_min']}min")
                 if code:
-                    desc += f"\nID: {code}"
+                    desc_parts.append(f"ID: {code}")
                 if group:
-                    desc += f"\nGroup: {group}"
+                    desc_parts.append(f"Group: {group}")
+                desc = "\n".join(desc_parts)
+                room = ev.get("exam_room", "")
+                if not et and st and ev.get("duration_min"):
+                    try:
+                        sh, sm = (int(x) for x in st.split(":"))
+                        total_m = sh * 60 + sm + int(ev["duration_min"])
+                        et = f"{total_m // 60:02d}:{total_m % 60:02d}"
+                    except Exception:
+                        pass
+                if not et and st:
+                    try:
+                        sh, sm = (int(x) for x in st.split(":"))
+                        et = f"{(sh + 1) % 24:02d}:{sm:02d}"
+                    except Exception:
+                        pass
             else:
                 subj = ev.get("english_name") or ev.get("subject_name", "")
                 desc_parts = []
@@ -439,6 +590,8 @@ def export_csv(events: list[dict], filename: str) -> str:
                 if group:
                     desc_parts.append(f"Group: {group}")
                 desc_parts.append(f"Period {ev.get('start_period')}-{ev.get('end_period')}")
+                if ev.get("status") and ev.get("status") != "normal":
+                    desc_parts.append(f"Status: {ev['status']}")
                 desc = "\n".join(desc_parts)
                 room = ev.get("room", "")
                 st, _ = TIME_SLOTS.get(ev.get("start_period", 0), ("08:00", "09:00"))
@@ -466,6 +619,8 @@ def sync_to_calendar(events: list[dict]) -> tuple[int, int]:
 
 
 def main():
+    import json
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s",
                         datefmt="%H:%M:%S")
 
@@ -475,30 +630,57 @@ def main():
     parser.add_argument("--weeks", "-w", type=int, default=CRAWLER_WEEKS_AHEAD,
                         help="Weeks to scrape (default: 2 = current + next)")
     parser.add_argument("--full", action="store_true",
-                        help="Scan full semester (20 weeks, slow)")
+                        help="Scan full semester (16 weeks)")
     parser.add_argument("--no-exams", action="store_true",
                         help="Skip exam scraping")
     parser.add_argument("--sync", action="store_true",
                         help="Push events to Google Calendar after scraping")
+    parser.add_argument("--playwright", action="store_true",
+                        help="Force Playwright browser crawl instead of HTTP")
+    parser.add_argument("--json", action="store_true",
+                        help="Export scraped data to JSON file as well")
+    parser.add_argument("--no-csv", action="store_true",
+                        help="Do not write CSV file")
+    parser.add_argument("--history", type=int, nargs="?", const=15,
+                        help="Show latest inserted/deleted events from SQLite history (default: 15)")
     args = parser.parse_args()
+
+    if args.history is not None:
+        from calendar_sync import format_sync_history_table, get_recent_sync_events
+        print(f"\n--- Latest {args.history} Sync History Events (SQLite) ---")
+        print(format_sync_history_table(get_recent_sync_events(limit=args.history)))
+        return
 
     try:
         weeks = 16 if args.full else args.weeks
         logger.info("Fetching %d weeks + exams...", weeks)
         events = fetch_all(semester=args.semester, weeks=weeks,
-                           exams=not args.no_exams)
+                           exams=not args.no_exams,
+                           force_playwright=args.playwright)
         if not events:
             logger.warning("No events found.")
         else:
-            export_csv(events, args.output)
+            if not args.no_csv:
+                export_csv(events, args.output)
+
+            if args.json:
+                json_path = args.output.rsplit(".", 1)[0] + ".json"
+                with open(json_path, "w", encoding="utf-8") as jf:
+                    json.dump(events, jf, ensure_ascii=False, indent=2)
+                logger.info("Exported JSON → %s", json_path)
+
             classes = sum(1 for e in events if e["type"] == "class")
             exams = sum(1 for e in events if e["type"] == "exam")
-            print(f"\n✓ Done! {classes} classes + {exams} exams → {args.output}")
+            print(f"\n✓ Done! {classes} classes + {exams} exams retrieved.")
 
-        if args.sync:
+        if args.sync and events:
             logger.info("Syncing to Google Calendar...")
             upserted, deleted = sync_to_calendar(events)
             logger.info("Calendar sync: %d upserted, %d deleted", upserted, deleted)
+            if upserted > 0 or deleted > 0:
+                from calendar_sync import format_sync_history_table, get_recent_sync_events
+                print(f"\n--- Recent Calendar Changes (SQLite Audit Log) ---")
+                print(format_sync_history_table(get_recent_sync_events(limit=upserted + deleted)))
 
     except Exception as exc:
         logger.error("Error: %s", exc, exc_info=True)

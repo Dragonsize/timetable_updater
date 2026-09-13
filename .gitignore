@@ -76,6 +76,10 @@ playwright-report/
 # Output files
 timetable.csv
 *.csv
+*.db
+*.sqlite
+*.sqlite3
+sync_history.db
 
 # Artifacts (no extension)
 timetable
@@ -88,3 +92,8 @@ flow/
 
 # Debug files
 debug_*.py
+
+# Reference / temporary repo
+reporef/
+refs_repo/
+

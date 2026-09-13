@@ -13,10 +13,12 @@ Uses the "replace bot-owned events" strategy:
 """
 from __future__ import annotations
 
+from datetime import datetime as dt, time as dtime, timedelta
 import hashlib
 import json
 import logging
 import os
+import sqlite3
 import time
 from zoneinfo import ZoneInfo
 
@@ -92,6 +94,8 @@ def _exam_payload(ev: dict) -> dict:
     dur = ev.get("duration_min") or 0
     if dur > 0:
         end_dt = start_dt + timedelta(minutes=dur)
+    elif ev.get("end_time"):
+        end_dt = _as_datetime(date_str, ev["end_time"], tz)
     else:
         end_dt = start_dt + timedelta(hours=1)
 
@@ -116,7 +120,6 @@ def _exam_payload(ev: dict) -> dict:
 
 def _as_datetime(date_iso: str, time_hm: str, tz: ZoneInfo):
     """Build tz-aware datetime from YYYY-MM-DD + HH:MM."""
-    from datetime import datetime as dt, time as dtime, timedelta
     d = dt.fromisoformat(date_iso).date()
     h, m = (int(x) for x in time_hm.split(":"))
     return dt.combine(d, dtime(h, m), tzinfo=tz)
@@ -169,20 +172,20 @@ def _date_of(event: dict) -> str | None:
 # ---------------------------------------------------------------------------
 def _build_service():
     svc_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
-    svc_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "").strip()
+    svc_file = (os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE") or os.getenv("GOOGLE_CREDENTIALS") or "").strip()
 
     if svc_json:
         creds = service_account.Credentials.from_service_account_info(
             json.loads(svc_json), scopes=CALENDAR_SCOPE)
     elif svc_file:
         if not os.path.isfile(svc_file):
-            raise RuntimeError(f"GOOGLE_SERVICE_ACCOUNT_FILE missing: {svc_file}")
+            raise RuntimeError(f"Google service account file missing: {svc_file}")
         creds = service_account.Credentials.from_service_account_file(
             svc_file, scopes=CALENDAR_SCOPE)
     else:
         raise RuntimeError(
-            "Set GOOGLE_SERVICE_ACCOUNT_JSON (GitHub secret) or "
-            "GOOGLE_SERVICE_ACCOUNT_FILE (local path).")
+            "Set GOOGLE_SERVICE_ACCOUNT_JSON (GitHub secret), "
+            "GOOGLE_SERVICE_ACCOUNT_FILE, or GOOGLE_CREDENTIALS.")
 
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
@@ -232,6 +235,116 @@ def _list_bot_events(service, calendar_id: str) -> dict[str, dict]:
         if not page_token:
             break
     return by_key
+
+
+# ---------------------------------------------------------------------------
+# SQLite Audit Logging
+# ---------------------------------------------------------------------------
+DEFAULT_DB_PATH = os.getenv("SYNC_DB_PATH", "sync_history.db")
+
+
+def init_sync_db(db_path: str = DEFAULT_DB_PATH) -> None:
+    """Initialize SQLite database for tracking sync history."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sync_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                action TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_key TEXT,
+                event_id TEXT,
+                summary TEXT,
+                start_time TEXT,
+                end_time TEXT,
+                location TEXT,
+                details TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sync_action ON sync_history(action)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sync_timestamp ON sync_history(timestamp)")
+        conn.commit()
+
+
+def log_sync_event(
+    action: str,
+    source_type: str,
+    source_key: str,
+    event_id: str,
+    summary: str,
+    start_time: str,
+    end_time: str,
+    location: str,
+    details: str = "",
+    db_path: str = DEFAULT_DB_PATH,
+) -> None:
+    """Record an inserted, patched, or deleted event to SQLite."""
+    init_sync_db(db_path)
+    now_iso = dt.now().isoformat()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO sync_history (
+                timestamp, action, source_type, source_key, event_id,
+                summary, start_time, end_time, location, details
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                now_iso, action, source_type, source_key, event_id,
+                summary, start_time, end_time, location, details
+            ),
+        )
+        conn.commit()
+
+
+def get_recent_sync_events(
+    limit: int = 20,
+    action: str | None = None,
+    db_path: str = DEFAULT_DB_PATH,
+) -> list[dict]:
+    """Query recent sync events from SQLite."""
+    init_sync_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        if action:
+            cur = conn.execute(
+                """
+                SELECT * FROM sync_history
+                WHERE action = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (action.upper(), limit),
+            )
+        else:
+            cur = conn.execute(
+                """
+                SELECT * FROM sync_history
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+        return [dict(row) for row in cur.fetchall()]
+
+
+def format_sync_history_table(events: list[dict]) -> str:
+    """Format a list of sync events as a human-readable table."""
+    if not events:
+        return "No sync history found in database."
+
+    header = f"{'ID':<5} {'ACTION':<8} {'TIMESTAMP':<20} {'DATE/TIME':<22} {'SUMMARY':<35} {'LOCATION'}"
+    separator = "-" * 110
+    lines = [header, separator]
+    for e in events:
+        row_id = str(e.get("id", ""))
+        action = e.get("action", "")
+        ts = str(e.get("timestamp", ""))[:19].replace("T", " ")
+        start = str(e.get("start_time", ""))[:16].replace("T", " ")
+        summary = str(e.get("summary", ""))[:33]
+        location = str(e.get("location", ""))
+        lines.append(f"{row_id:<5} {action:<8} {ts:<20} {start:<22} {summary:<35} {location}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -289,16 +402,46 @@ def sync_to_google_calendar(events: list[dict]) -> tuple[int, int]:
                 "source_hash": item["hash"],
             }
         }
+        start_str = body.get("start", {}).get("dateTime", "")
+        end_str = body.get("end", {}).get("dateTime", "")
+        summary = body.get("summary", "")
+        loc = body.get("location", "")
+
         if event_id:
             _execute("calendar patch",
                      lambda: service.events().patch(
                          calendarId=calendar_id, eventId=event_id, body=body).execute())
             upserted += 1
+            logger.info("~ [UPDATE] %s (%s, %s)", summary, start_str, loc)
+            log_sync_event(
+                action="UPDATE",
+                source_type=item["source_type"],
+                source_key=item["key"],
+                event_id=event_id,
+                summary=summary,
+                start_time=start_str,
+                end_time=end_str,
+                location=loc,
+                details=body.get("description", ""),
+            )
         else:
-            _execute("calendar insert",
+            resp_ev = _execute("calendar insert",
                      lambda: service.events().insert(
                          calendarId=calendar_id, body=body).execute())
             upserted += 1
+            new_id = str((resp_ev or {}).get("id") or "")
+            logger.info("+ [INSERT] %s (%s, %s)", summary, start_str, loc)
+            log_sync_event(
+                action="INSERT",
+                source_type=item["source_type"],
+                source_key=item["key"],
+                event_id=new_id,
+                summary=summary,
+                start_time=start_str,
+                end_time=end_str,
+                location=loc,
+                details=body.get("description", ""),
+            )
 
     deleted = 0
     for key, ev in existing.items():
@@ -321,6 +464,22 @@ def sync_to_google_calendar(events: list[dict]) -> tuple[int, int]:
                      lambda: service.events().delete(
                          calendarId=calendar_id, eventId=eid).execute())
             deleted += 1
+            summary = ev.get("summary", "")
+            start_str = (ev.get("start") or {}).get("dateTime") or (ev.get("start") or {}).get("date") or ""
+            end_str = (ev.get("end") or {}).get("dateTime") or (ev.get("end") or {}).get("date") or ""
+            loc = ev.get("location", "")
+            logger.info("- [DELETE] %s (%s, %s)", summary, start_str, loc)
+            log_sync_event(
+                action="DELETE",
+                source_type=stype,
+                source_key=key,
+                event_id=eid,
+                summary=summary,
+                start_time=start_str,
+                end_time=end_str,
+                location=loc,
+                details=ev.get("description", ""),
+            )
 
     return upserted, deleted
 
